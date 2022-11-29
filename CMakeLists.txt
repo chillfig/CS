@@ -1,8 +1,8 @@
 project(CFS_CS C)
 
-include_directories(fsw/src)
-include_directories(fsw/mission_inc)
-include_directories(fsw/platform_inc)
+# target_include_directories(cs PUBLIC fsw/inc)
+# include_directories(fsw/src)
+include_directories(fsw/inc)
 
 set(APP_SRC_FILES
   fsw/src/cs_cmds.c
