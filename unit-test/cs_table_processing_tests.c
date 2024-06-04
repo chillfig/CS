@@ -919,7 +919,8 @@ void CS_ValidateTablesChecksumDefinitionTable_Test_UndefTableErrorResult(void)
 
     strncpy(CS_AppData.DefTablesTblPtr[0].Name, "name", 10);
     strncpy(CS_AppData.DefTablesTblPtr[1].Name, "name", 10);
-    strncpy(CS_AppData.DefTablesTblPtr[2].Name, "name", 10);
+    memset(CS_AppData.DefTablesTblPtr[2].Name, 0xFF, sizeof(CS_AppData.DefTablesTblPtr[2].Name)); 
+    /* This test also covers CS_strnlen false branch */
 
     /* Execute the function being tested */
     Result = CS_ValidateTablesChecksumDefinitionTable(CS_AppData.DefTablesTblPtr);

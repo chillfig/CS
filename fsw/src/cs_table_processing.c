@@ -204,6 +204,22 @@ CFE_Status_t CS_ValidateMemoryChecksumDefinitionTable(void *TblPtr)
     return Result;
 }
 
+/*----------------------------------------------------------------
+ *
+ * Internal helper routine only, not part of API.
+ *
+ *-----------------------------------------------------------------*/
+static inline size_t CS_strnlen(const char *str, size_t maxlen)
+{
+    const char *end = memchr(str, 0, maxlen);
+    if (end != NULL)
+    {
+        /* actual length of string is difference */
+        maxlen = end - str;
+    }
+    return maxlen;
+}
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 /*                                                                 */
 /* CS Validation Callback function for Tables Table                */
@@ -231,7 +247,7 @@ CFE_Status_t CS_ValidateTablesChecksumDefinitionTable(void *TblPtr)
         StateField = OuterEntry->State;
 
         /* Check for non-zero length for table name */
-        if (strlen(OuterEntry->Name) != 0)
+        if (CS_strnlen(OuterEntry->Name, sizeof(OuterEntry->Name)) != 0)
         {
             /* Verify valid state definition */
             if (((StateField == CS_STATE_EMPTY) || (StateField == CS_STATE_ENABLED) ||
@@ -357,7 +373,7 @@ CFE_Status_t CS_ValidateAppChecksumDefinitionTable(void *TblPtr)
             }
             BadCount++;
         }
-        else if (strlen(OuterEntry->Name) != 0)
+        else if (CS_strnlen(OuterEntry->Name, sizeof(OuterEntry->Name)) != 0)
         {
             /* Verify valid state definition */
             if (((StateField == CS_STATE_EMPTY) || (StateField == CS_STATE_ENABLED) ||
@@ -825,7 +841,7 @@ CFE_Status_t CS_TableInit(CFE_TBL_Handle_t *DefinitionTableHandle, CFE_TBL_Handl
     osal_id_t    Fd               = OS_OBJECT_ID_UNDEFINED;
     char         TableType[CS_TABLETYPE_NAME_SIZE];
 
-    strncpy(TableType, "Undef Tbl", CS_TABLETYPE_NAME_SIZE); /* Init table type */
+    snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Undef Tbl"); /* Init table type */
 
     SizeOfTable = NumEntries * SizeofResultsTableEntry;
 
@@ -904,19 +920,19 @@ CFE_Status_t CS_TableInit(CFE_TBL_Handle_t *DefinitionTableHandle, CFE_TBL_Handl
     {
         if (Table == CS_EEPROM_TABLE)
         {
-            strncpy(TableType, "EEPROM", CS_TABLETYPE_NAME_SIZE);
+            snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "EEPROM");
         }
         if (Table == CS_MEMORY_TABLE)
         {
-            strncpy(TableType, "Memory", CS_TABLETYPE_NAME_SIZE);
+            snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Memory");
         }
         if (Table == CS_TABLES_TABLE)
         {
-            strncpy(TableType, "Tables", CS_TABLETYPE_NAME_SIZE);
+            snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Tables");
         }
         if (Table == CS_APP_TABLE)
         {
-            strncpy(TableType, "Apps", CS_TABLETYPE_NAME_SIZE);
+            snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Apps");
         }
 
         CFE_EVS_SendEvent(CS_TBL_INIT_ERR_EID, CFE_EVS_EventType_ERROR,
@@ -967,7 +983,7 @@ CFE_Status_t CS_HandleTableUpdate(void *DefinitionTblPtr, void *ResultsTblPtr, C
     int32        Loop           = 0;
     char         TableType[CS_TABLETYPE_NAME_SIZE];
 
-    strncpy(TableType, "Undef Tbl", CS_TABLETYPE_NAME_SIZE); /* Init table type */
+    snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Undef Tbl"); /* Init table type */
 
     /* Below, there are several values that are returned and assigned, but never evaluated. */
     /* This is done so intentionally, as it helps us with Source-Level debugging this functions. */
@@ -1031,19 +1047,19 @@ CFE_Status_t CS_HandleTableUpdate(void *DefinitionTblPtr, void *ResultsTblPtr, C
         {
             if (Table == CS_EEPROM_TABLE)
             {
-                strncpy(TableType, "EEPROM", CS_TABLETYPE_NAME_SIZE);
+                snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "EEPROM");
             }
             if (Table == CS_MEMORY_TABLE)
             {
-                strncpy(TableType, "Memory", CS_TABLETYPE_NAME_SIZE);
+                snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Memory");
             }
             if (Table == CS_TABLES_TABLE)
             {
-                strncpy(TableType, "Table", CS_TABLETYPE_NAME_SIZE);
+                snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "Table");
             }
             if (Table == CS_APP_TABLE)
             {
-                strncpy(TableType, "App", CS_TABLETYPE_NAME_SIZE);
+                snprintf(TableType, CS_TABLETYPE_NAME_SIZE, "App");
             }
 
             /* There was a problem somewhere, generate an event */
