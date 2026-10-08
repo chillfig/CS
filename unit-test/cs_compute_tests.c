@@ -78,6 +78,32 @@ void CS_COMPUTE_TEST_CFE_ES_GetModuleInfoHandler2(void *UserObj, UT_EntryKey_t F
     AppInfo->AddressesAreValid = false;
 }
 
+/*
+ * Relocated-module handler: reports the same 5-byte code segment, but at a new load
+ * address, as ES does after it restarts an app (nasa/CS issue #20).
+ */
+#define CS_COMPUTE_TEST_RELOCATED_ADDR 0x1000
+
+void CS_COMPUTE_TEST_CFE_ES_GetModuleInfoHandler_Relocated(void                   *UserObj,
+                                                           UT_EntryKey_t           FuncKey,
+                                                           const UT_StubContext_t *Context)
+{
+    CFE_ES_AppInfo_t *AppInfo =
+        (CFE_ES_AppInfo_t *)UT_Hook_GetArgValueByName(Context, "ModuleInfo", CFE_ES_AppInfo_t *);
+
+    AppInfo->CodeSize          = 5;
+    AppInfo->CodeAddress       = CS_COMPUTE_TEST_RELOCATED_ADDR;
+    AppInfo->AddressesAreValid = true;
+}
+
+/* Records the buffer address CS actually hands to the CRC routine on each chunk */
+static const void *CS_COMPUTE_TEST_LastCrcDataPtr = NULL;
+
+void CS_COMPUTE_TEST_CFE_ES_CalculateCRCHandler(void *UserObj, UT_EntryKey_t FuncKey, const UT_StubContext_t *Context)
+{
+    CS_COMPUTE_TEST_LastCrcDataPtr = UT_Hook_GetArgValueByName(Context, "DataPtr", const void *);
+}
+
 void CS_COMPUTE_TEST_CS_GetDefTblEntryByName(void *UserObj, UT_EntryKey_t FuncKey, const UT_StubContext_t *Context)
 {
     void **EntryPtr = UT_Hook_GetArgValueByName(Context, "EntryPtr", void **);
@@ -1235,6 +1261,117 @@ void CS_ComputeApp_Test_OffsetlargerThanBytesCheck(void)
     UtAssert_UINT32_EQ(ResultsEntry.NumBytesToChecksum, CS_AppData.MaxBytesPerCycle);
 }
 
+/*
+ * Reproduces nasa/CS issue #20 (part 1): an app that ES restarts is reloaded at a new
+ * address.  CS picks up the new address at the start of the next pass, but still
+ * compares the new CRC against the pre-restart baseline, so the restart is reported
+ * as a code-segment miscompare on every subsequent pass.  The baseline is never
+ * refreshed, so an HS event monitor on this miscompare will act on it.
+ *
+ * These assertions document CURRENT behavior.  They are expected to change when the
+ * issue is fixed.
+ */
+void CS_ComputeApp_Test_RelocatedAppMiscompare(void)
+{
+    CS_Res_App_Table_Entry_t ResultsEntry;
+    uint32                   ComputedCSValue = 0;
+    bool                     DoneWithEntry   = false;
+
+    memset(&ResultsEntry, 0, sizeof(ResultsEntry));
+
+    CS_AppData.MaxBytesPerCycle = 5;
+
+    /* Pass 1: app loaded at address 1, baseline CRC of 3 is established */
+    UT_SetHandlerFunction(UT_KEY(CFE_ES_GetModuleInfo), CS_COMPUTE_TEST_CFE_ES_GetModuleInfoHandler1, NULL);
+    UT_SetDeferredRetcode(UT_KEY(CFE_ES_CalculateCRC), 1, 3);
+
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CFE_SUCCESS);
+    UtAssert_BOOL_TRUE(DoneWithEntry);
+    UtAssert_BOOL_TRUE(ResultsEntry.ComputedYet);
+    UtAssert_UINT32_EQ(ResultsEntry.ComparisonValue, 3);
+    UtAssert_ADDRESS_EQ(CFE_ES_MEMADDRESS_TO_PTR(ResultsEntry.StartAddress), 1);
+
+    /* ES restarts the app: same code is reloaded at a new address and the relocations
+     * patched into the code segment produce a different CRC (7) */
+    UT_SetHandlerFunction(UT_KEY(CFE_ES_GetModuleInfo), CS_COMPUTE_TEST_CFE_ES_GetModuleInfoHandler_Relocated, NULL);
+    UT_SetDeferredRetcode(UT_KEY(CFE_ES_CalculateCRC), 1, 7);
+
+    /* Pass 2: CS sees the new address but reports a miscompare instead of re-baselining */
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CS_ERROR);
+    UtAssert_BOOL_TRUE(DoneWithEntry);
+    UtAssert_STUB_COUNT(CFE_ES_GetModuleInfo, 2);
+    UtAssert_ADDRESS_EQ(CFE_ES_MEMADDRESS_TO_PTR(ResultsEntry.StartAddress), CS_COMPUTE_TEST_RELOCATED_ADDR);
+    UtAssert_UINT32_EQ(ComputedCSValue, 7);
+    UtAssert_UINT32_EQ(ResultsEntry.ComparisonValue, 3);
+
+    /* Pass 3: steady state -- the miscompare repeats on every pass until a recompute is commanded */
+    UT_SetDeferredRetcode(UT_KEY(CFE_ES_CalculateCRC), 1, 7);
+
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CS_ERROR);
+    UtAssert_BOOL_TRUE(DoneWithEntry);
+    UtAssert_UINT32_EQ(ResultsEntry.ComparisonValue, 3);
+}
+
+/*
+ * Reproduces nasa/CS issue #20 (part 2): if the restart lands while a multi-cycle pass
+ * over the app is in progress, CS does not re-query ES until the pass completes.  It
+ * keeps reading from the stored pre-restart address, which ES has already unloaded,
+ * and then records a baseline computed from that stale memory.
+ *
+ * These assertions document CURRENT behavior.  They are expected to change when the
+ * issue is fixed.
+ */
+void CS_ComputeApp_Test_RelocatedMidPassReadsStaleAddress(void)
+{
+    CS_Res_App_Table_Entry_t ResultsEntry;
+    uint32                   ComputedCSValue = 0;
+    bool                     DoneWithEntry   = false;
+
+    memset(&ResultsEntry, 0, sizeof(ResultsEntry));
+
+    /* 5-byte code segment at 2 bytes per cycle: the pass takes 3 cycles */
+    CS_AppData.MaxBytesPerCycle = 2;
+
+    UT_SetHandlerFunction(UT_KEY(CFE_ES_GetModuleInfo), CS_COMPUTE_TEST_CFE_ES_GetModuleInfoHandler1, NULL);
+    UT_SetHandlerFunction(UT_KEY(CFE_ES_CalculateCRC), CS_COMPUTE_TEST_CFE_ES_CalculateCRCHandler, NULL);
+    CS_COMPUTE_TEST_LastCrcDataPtr = NULL;
+
+    /* Cycle 1: bytes 0-1 are read from the original module at address 1 */
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CFE_SUCCESS);
+    UtAssert_BOOL_FALSE(DoneWithEntry);
+    UtAssert_STUB_COUNT(CFE_ES_GetModuleInfo, 1);
+    UtAssert_ADDRESS_EQ(CS_COMPUTE_TEST_LastCrcDataPtr, 1);
+    UtAssert_UINT32_EQ(ResultsEntry.ByteOffset, 2);
+
+    /* ES restarts the app between cycles: the module at address 1 is unloaded and the
+     * app is reloaded at CS_COMPUTE_TEST_RELOCATED_ADDR */
+    UT_SetHandlerFunction(UT_KEY(CFE_ES_GetModuleInfo), CS_COMPUTE_TEST_CFE_ES_GetModuleInfoHandler_Relocated, NULL);
+
+    /* Cycle 2: CS does not ask ES again and reads bytes 2-3 from the unloaded module */
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CFE_SUCCESS);
+    UtAssert_BOOL_FALSE(DoneWithEntry);
+    UtAssert_STUB_COUNT(CFE_ES_GetModuleInfo, 1);
+    UtAssert_ADDRESS_EQ(CS_COMPUTE_TEST_LastCrcDataPtr, 1 + 2);
+    UtAssert_ADDRESS_EQ(CFE_ES_MEMADDRESS_TO_PTR(ResultsEntry.StartAddress), 1);
+    UtAssert_UINT32_EQ(ResultsEntry.ByteOffset, 4);
+
+    /* Cycle 3: still the stale address; the pass completes and the baseline is recorded
+     * from memory that no longer holds this app */
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CFE_SUCCESS);
+    UtAssert_BOOL_TRUE(DoneWithEntry);
+    UtAssert_STUB_COUNT(CFE_ES_GetModuleInfo, 1);
+    UtAssert_ADDRESS_EQ(CS_COMPUTE_TEST_LastCrcDataPtr, 1 + 4);
+    UtAssert_ADDRESS_EQ(CFE_ES_MEMADDRESS_TO_PTR(ResultsEntry.StartAddress), 1);
+    UtAssert_BOOL_TRUE(ResultsEntry.ComputedYet);
+
+    /* Cycle 4: only now, at the start of the next pass, does CS pick up the new address */
+    UtAssert_UINT32_EQ(CS_ComputeApp(&ResultsEntry, &ComputedCSValue, &DoneWithEntry), CFE_SUCCESS);
+    UtAssert_BOOL_FALSE(DoneWithEntry);
+    UtAssert_STUB_COUNT(CFE_ES_GetModuleInfo, 2);
+    UtAssert_ADDRESS_EQ(CS_COMPUTE_TEST_LastCrcDataPtr, CS_COMPUTE_TEST_RELOCATED_ADDR);
+    UtAssert_ADDRESS_EQ(CFE_ES_MEMADDRESS_TO_PTR(ResultsEntry.StartAddress), CS_COMPUTE_TEST_RELOCATED_ADDR);
+}
+
 void CS_ComputeApp_Test_EntryNotFinished(void)
 {
     CS_Res_App_Table_Entry_t ResultsEntry;
@@ -2232,6 +2369,14 @@ void UtTest_Setup(void)
                CS_Test_Setup,
                CS_Test_TearDown,
                "CS_ComputeApp_Test_OffsetlargerThanBytesCheck");
+    UtTest_Add(CS_ComputeApp_Test_RelocatedAppMiscompare,
+               CS_Test_Setup,
+               CS_Test_TearDown,
+               "CS_ComputeApp_Test_RelocatedAppMiscompare");
+    UtTest_Add(CS_ComputeApp_Test_RelocatedMidPassReadsStaleAddress,
+               CS_Test_Setup,
+               CS_Test_TearDown,
+               "CS_ComputeApp_Test_RelocatedMidPassReadsStaleAddress");
 
     UtTest_Add(CS_RecomputeEepromMemoryChildTask_Test_EEPROMTable,
                CS_Test_Setup,
